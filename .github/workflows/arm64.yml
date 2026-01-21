@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       docker_images:
-        description: '请填写docker镜像名称 多个用英文逗号分开'
+        description: '请填写docker镜像名称，多个用英文逗号分开'
         required: true
-        default: 'alpine:latest,busybox:stable-glibc'  # 设置默认的 Docker 镜像列表
+        default: 'alpine:latest,busybox:stable-glibc'
 
 jobs:
   pull_and_package:
@@ -16,23 +16,40 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Pull Docker Images and Package
+    - name: Set up QEMU for multi-arch support
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx (optional but recommended)
+      uses: docker/setup-buildx-action@v3
+
+    - name: Pull Docker Images and Package as ARM64
       run: |
         images="${{ github.event.inputs.docker_images }}"
-          IFS=',' read -r -a image_array <<< "$images"
-          for image in "${image_array[@]}"; do
-            docker pull "${image}" --platform "linux/arm64"
-            image_name="${image//\//_}"
-            image_name="${image_name//:/_}"
-            docker save "${image}" -o "${image_name}-arm64.tar"
-            gzip -c "${image_name}-arm64.tar" > "${image_name}-arm64.tar.gz"
-            rm "${image_name}-arm64.tar"
-          done
+        IFS=',' read -r -a image_array <<< "$images"
+        for image in "${image_array[@]}"; do
+          echo "👉 Processing image: $image"
+
+          # 尝试拉取 arm64 版本
+          if ! docker pull --platform linux/arm64 "$image"; then
+            echo "❌ Failed to pull $image for linux/arm64. Does it support this architecture?"
+            exit 1
+          fi
+
+          # 清理文件名中的 / 和 :
+          safe_name="${image//\//_}"
+          safe_name="${safe_name//:/_}"
+
+          # 保存并压缩
+          docker save "$image" -o "${safe_name}-arm64.tar"
+          gzip -c "${safe_name}-arm64.tar" > "${safe_name}-arm64.tar.gz"
+          rm "${safe_name}-arm64.tar"
+
+          echo "✅ Saved: ${safe_name}-arm64.tar.gz"
+        done
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: my-artifact
-        path: ${{ github.workspace }}/*.tar.gz
-        retention-days: 1  # 将保留天数设置为 1 天 最多可设置90天
-
+        name: arm64-docker-images
+        path: ${{ github.workspace }}/*-arm64.tar.gz
+        retention-days: 1
